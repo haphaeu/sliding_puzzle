@@ -1,10 +1,13 @@
-use nannou::prelude::*;
+use std::env;
+
+use nannou::{prelude::*, rand::{seq::SliceRandom, thread_rng}};
 
 static PAD_HEIGHT_FACTOR: f32 = 0.1;
 static GRID_HEIGHT: usize = 4;
 static GRID_WIDTH: usize = 4;
 
-fn board() -> Vec<Vec<usize>> {
+// Build a solved board with numbers up to GRID_HEIGHT * GRID_WIDTH - 1
+fn solved_board() -> Vec<Vec<usize>> {
     let mut board = vec![vec![0; GRID_WIDTH]; GRID_HEIGHT];
     let mut count = 1;
     for row in 0..GRID_HEIGHT {
@@ -17,20 +20,41 @@ fn board() -> Vec<Vec<usize>> {
     board
 }
 
+// Build a board with numbers up to GRID_HEIGHT * GRID_WIDTH - 1
+// in a scrambled order.
+fn scrambled_board() -> Vec<Vec<usize>> {
+    
+    // vector of numbers from 0 to GRID_HEIGHT * GRID_WIDTH - 1 in a random order
+    let mut numbers: Vec<usize> = (0..GRID_HEIGHT * GRID_WIDTH).collect();
+    numbers.shuffle(&mut thread_rng());
+
+    let mut board = vec![vec![0; GRID_WIDTH]; GRID_HEIGHT];
+    for i in 0..GRID_HEIGHT {
+        for j in 0..GRID_WIDTH {
+            board[i][j] = numbers.pop().unwrap();
+        }
+    }
+    board
+}
+
 struct Model {
     board: Vec<Vec<usize>>,
 }
 impl Model {
     fn new() -> Self {
         Self {
-            board: board(),
+            board: scrambled_board(),
         }
     }
     /// Reset board
     fn reset(&mut self) {
-        self.board = board();
+        self.board = scrambled_board();
     }
-    
+    /// Solve board
+    fn solve(&mut self) {
+        self.board = solved_board();
+    }
+
     /// Returns the indices of the empty space.
     fn index_empty(&self) -> (usize, usize) {
 
@@ -41,7 +65,7 @@ impl Model {
     }
 
     /// When the user clicks on a piece, this function checks
-    /// if that piece can be moved and returns `true` if the arrow
+    /// if that piece can be moved and returns `true` if the piece
     // can be moved, and `false` otherwise.
     fn is_move_valid(&self, ix: usize, iy: usize) -> bool {
         let (empty_x, empty_y) = self.index_empty();
@@ -49,7 +73,7 @@ impl Model {
         ix.abs_diff(empty_x) + iy.abs_diff(empty_y) == 1
     }
 
-    /// Move the arrow at `index` to the empty space.
+    /// Move the piece at `(ix, iy)` to the empty space.
     /// Check if the move is valid.
     fn try_move(&mut self, ix: usize, iy: usize) {
         println!("Trying to move piece at index {ix}, {iy}");
@@ -73,6 +97,9 @@ fn main() {
 }
 
 fn model(app: &App) -> Model {
+
+    println!("Args: {:?}", env::args().collect::<Vec<_>>());
+
     let _window = app
         .new_window()
         .size(300, 300)
@@ -109,6 +136,7 @@ fn event(app: &App, model: &mut Model, event: WindowEvent) {
             model.try_move(ix_clicked, iy_clicked);
         },
         KeyPressed(Key::R) => model.reset(),
+        KeyPressed(Key::S) => model.solve(),
         _ => (),
     }
 }
