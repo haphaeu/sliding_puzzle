@@ -6,5 +6,6 @@
  - [x] pass grid size as cmd argument
  - [x] fix potential unsolvable scramble
  - [x] animate scrambling
- - [ ] change size without restaring app
+ - [ ] change size without restaring app ???
+ - [ ] improve image loading
  
