@@ -3,9 +3,13 @@ use nannou::image::{self, GenericImageView};
 use nannou::prelude::*;
 use nannou::prelude::{wgpu, App, Frame, Key, LoopMode, MousePressed, Update, WindowEvent};
 
-use std::{cell, env, thread, time};
+use std::{env, fs, path::PathBuf, thread, time};
+
+use env_logger::Builder;
+use log::debug;
 
 static PAD_HEIGHT_FACTOR: f32 = 0.1;
+static START_WINDOW_SIZE: u32 = 300;
 
 // Build a solved board with numbers up to height * width - 1
 fn solved_board(size: usize) -> Vec<Vec<usize>> {
@@ -22,8 +26,11 @@ fn solved_board(size: usize) -> Vec<Vec<usize>> {
 struct Model {
     grid_size: usize,
     flag_scramble: bool,
+    flag_show_numbers: bool,
     scramble_count: usize,
     board: Vec<Vec<usize>>,
+    image_list: Vec<PathBuf>,
+    image_index_current: usize,
     image_original: image::DynamicImage,
     image_solved: image::DynamicImage,
     image: image::DynamicImage,
@@ -56,16 +63,16 @@ impl Model {
     /// Move the piece at `(ix, iy)` to the empty space.
     /// Check if the move is valid.
     fn try_move(&mut self, ix: usize, iy: usize) {
-        //println!("Trying to move piece at index {ix}, {iy}");
+        //debug!("Trying to move piece at index {ix}, {iy}");
         match self.is_move_valid(ix, iy) {
             true => {
-                //println!("Move is valid");
+                //debug!("Move is valid");
                 let (empty_x, empty_y) = self.index_empty();
                 self.board[empty_y][empty_x] = self.board[iy][ix];
                 self.board[iy][ix] = 0;
             }
             false => {
-                //println!("Move is invalid");
+                //debug!("Move is invalid");
                 ()
             }
         }
@@ -94,31 +101,54 @@ impl Model {
         for row in 0..self.grid_size {
             for col in 0..self.grid_size {
                 let piece = self.board[row][col];
-                let other: image::DynamicImage;
-                let x = (col * cell_size) as u32;
-                let y = size - ((row + 1) * cell_size) as u32;
                 if piece != 0 {
-                    other = self.image_solved.crop_imm(
-                        ((piece - 1) % self.grid_size) as u32 * cell_size as u32,
-                        (piece / self.grid_size) as u32 * cell_size as u32,
-                        cell_size as u32,
-                        cell_size as u32,
-                    );
+                    let x0 = ((piece - 1) % self.grid_size) as u32 * cell_size as u32;
+                    let y0 = ((piece - 1) / self.grid_size) as u32 * cell_size as u32;
+                    let little_square =
+                        self.image_solved
+                            .crop_imm(x0, y0, cell_size as u32, cell_size as u32);
+                    let x = (col * cell_size) as u32;
+                    let y = size - ((row + 1) * cell_size) as u32;
+                    debug!("Row {row}, Col {col}, piece: {piece:2} at x0: {x0:3}, y0: {y0:3} into x: {x:3}, y: {y:3}");
+                    new_image
+                        .copy_from(&little_square, x, y)
+                        .expect("Failed copying image");
                 } else {
-                    // If the piece is 0, we want to draw a black square
-                    other = image::DynamicImage::new_rgba8(cell_size as u32, cell_size as u32);
+                    debug!("Row {row}, Col {col}, piece: {piece:2} - nothing to do");
                 }
-                new_image
-                    .copy_from(&other, x, y)
-                    .expect("Failed copying image");
             }
         }
-
         self.image = new_image;
+    }
+    
+    fn next_image(&mut self) {
+        self.image_index_current = (self.image_index_current + 1) % self.image_list.len();
+        self.change_image();
+    }
+    fn previous_image(&mut self) {
+        if self.image_index_current == 0 {
+            self.image_index_current = self.image_list.len() - 1;
+        } else {
+            self.image_index_current -= 1;
+        }
+        self.change_image();
+    }
+    fn change_image(&mut self) {
+        self.image_original = image::open(&self.image_list[self.image_index_current]).unwrap();
+        let (img_size, _h) = self.image_solved.dimensions();
+        self.image_solved = self.image_original.resize_to_fill(
+            img_size,
+            img_size,
+            image::imageops::FilterType::Nearest,
+        );
     }
 }
 
 fn main() {
+    // for debugging, do `set PUZZLE_LOG=debug` in cmd
+    Builder::from_env("PUZZLE_LOG").init();
+    debug!("Logger initialized");
+
     nannou::app(model)
         .update(update)
         .loop_mode(LoopMode::Wait)
@@ -138,7 +168,7 @@ fn model(app: &App) -> Model {
 
     let _window = app
         .new_window()
-        .size(300, 300)
+        .size(START_WINDOW_SIZE, START_WINDOW_SIZE)
         .title("Sliding Puzzle")
         .view(view)
         .event(event)
@@ -147,9 +177,15 @@ fn model(app: &App) -> Model {
         .unwrap();
 
     let pad = (app.window_rect().h() * PAD_HEIGHT_FACTOR) as u32;
-    let img_size = 300 - 2 * pad;
+    let img_size = START_WINDOW_SIZE - 2 * pad;
 
-    let image_original = image::open("image.png").unwrap();
+    let image_list = get_images();
+    if image_list.is_empty() {
+        panic!("No images found in the images folder");
+    }
+    debug!("Images found: {:?}", image_list);
+    let image_index_current = 0;
+    let image_original = image::open(&image_list[image_index_current]).unwrap();
 
     let image_solved =
         image_original.resize_to_fill(img_size, img_size, image::imageops::FilterType::Nearest);
@@ -159,8 +195,11 @@ fn model(app: &App) -> Model {
     Model {
         grid_size,
         flag_scramble: false,
+        flag_show_numbers: true,
         scramble_count: 0,
         board: solved_board(grid_size),
+        image_list,
+        image_index_current,
         image_original,
         image_solved,
         image,
@@ -203,7 +242,7 @@ fn event(app: &App, model: &mut Model, event: WindowEvent) {
             let cell_size = (win.h().min(win.w()) - 2.0 * pad) / model.grid_size as f32;
             let board_size = cell_size * model.grid_size as f32;
             if app.mouse.x.abs().max(app.mouse.y.abs()) > board_size / 2.0 {
-                println!("Clicked outside the board");
+                debug!("Clicked outside the board");
                 return;
             }
             let x_offset = (win.w() - 2.0 * pad - board_size) / 2.0;
@@ -215,10 +254,13 @@ fn event(app: &App, model: &mut Model, event: WindowEvent) {
             let iy_clicked = (model.grid_size as f32
                 * (app.mouse.y + win.h() / 2.0 - pad - 2.0 * y_offset)
                 / (win.h() - 2.0 * pad - y_offset)) as usize;
-            println!("Indices clicked: {}, {}", ix_clicked, iy_clicked);
+            debug!("Indices clicked: {}, {}", ix_clicked, iy_clicked);
             model.try_move(ix_clicked, iy_clicked);
         }
         KeyPressed(Key::R) => model.reset(),
+        KeyPressed(Key::N) => model.flag_show_numbers = !model.flag_show_numbers,
+        KeyPressed(Key::Period) => model.next_image(),
+        KeyPressed(Key::Comma) => model.previous_image(),
         KeyPressed(Key::S) => {
             app.set_loop_mode(LoopMode::RefreshSync);
             model.flag_scramble = true;
@@ -262,23 +304,36 @@ fn view(app: &App, model: &Model, frame: Frame) {
                 .stroke_weight(2.0);
 
             // draw the number of the piece
+            if model.flag_show_numbers {
+                let text = match piece {
+                    0 => String::from(""),
+                    _ => piece.to_string(),
+                };
 
-            let text = match piece {
-                0 => String::from(""),
-                _ => piece.to_string(),
-            };
+                let text_area = geom::Rect::from_w_h(cell_size, cell_size).relative_to([-x, -y]);
 
-            let text_area = geom::Rect::from_w_h(cell_size, cell_size).relative_to([-x, -y]);
-
-            draw.text(&text)
-                .font_size(font_size)
-                .xy(text_area.xy())
-                .wh(text_area.wh())
-                .align_text_middle_y()
-                .center_justify()
-                .color(BLACK);
+                draw.text(&text)
+                    .font_size(font_size)
+                    .xy(text_area.xy())
+                    .wh(text_area.wh())
+                    .align_text_middle_y()
+                    .center_justify()
+                    .color(BLACK);
+            }
         }
     }
 
     draw.to_frame(app, &frame).unwrap();
+}
+
+fn get_images() -> Vec<PathBuf> {
+    let mut images = vec![];
+    let paths = fs::read_dir("images").unwrap();
+    for path in paths {
+        let path = path.unwrap().path();
+        if path.extension().unwrap() == "png" {
+            images.push(path);
+        }
+    }
+    images
 }
