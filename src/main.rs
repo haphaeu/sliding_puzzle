@@ -8,10 +8,16 @@ use std::{env, fs, path::PathBuf, thread, time};
 use env_logger::Builder;
 use log::debug;
 
-static PAD_HEIGHT_FACTOR: f32 = 0.1;
+/// Initial window size, window is square.
+/// User can resize to non-square size, in which
+/// case the square grid will be centred in the window.
 static START_WINDOW_SIZE: u32 = 300;
 
-// Build a solved board with numbers up to height * width - 1
+/// Padding around the grid is calculated as a factor
+/// of the window height.
+static PAD_HEIGHT_FACTOR: f32 = 0.1;
+
+/// Build a solved board with numbers up to height * width - 1
 fn solved_board(size: usize) -> Vec<Vec<usize>> {
     let mut board = vec![vec![0; size]; size];
     for row in 0..size {
@@ -24,17 +30,17 @@ fn solved_board(size: usize) -> Vec<Vec<usize>> {
 }
 
 struct Model {
-    grid_size: usize,
-    flag_scramble: bool,
-    flag_show_numbers: bool,
-    scramble_count: usize,
-    board: Vec<Vec<usize>>,
-    image_list: Vec<PathBuf>,
-    image_index_current: usize,
-    image_original: image::DynamicImage,
-    image_solved: image::DynamicImage,
-    image: image::DynamicImage,
-    texture: wgpu::Texture,
+    grid_size: usize,                    // Size of the square grid of the board
+    flag_scramble: bool,                 // Flag to indicate if the board is being scrambled
+    flag_show_numbers: bool,             // Flag to indicate if the numbers should be shown
+    scramble_count: usize,               // Number of times the board has been scrambled
+    board: Vec<Vec<usize>>,              // The board itself
+    image_list: Vec<PathBuf>,            // List of images to use
+    image_index_current: usize,          // Index of the current image
+    image_original: image::DynamicImage, // Original image
+    image_solved: image::DynamicImage,   // Resized image and cut square
+    image: image::DynamicImage,          // Game display, ie, scrambled image
+    texture: wgpu::Texture,              // Texture to display the image
 }
 
 impl Model {
@@ -47,7 +53,6 @@ impl Model {
     fn index_empty(&self) -> (usize, usize) {
         let iy = self.board.iter().position(|r| r.contains(&0)).unwrap();
         let ix = self.board[iy].iter().position(|&x| x == 0).unwrap();
-
         (ix, iy)
     }
 
@@ -56,30 +61,29 @@ impl Model {
     // can be moved, and `false` otherwise.
     fn is_move_valid(&self, ix: usize, iy: usize) -> bool {
         let (empty_x, empty_y) = self.index_empty();
-
         ix.abs_diff(empty_x) + iy.abs_diff(empty_y) == 1
     }
 
     /// Move the piece at `(ix, iy)` to the empty space.
     /// Check if the move is valid.
     fn try_move(&mut self, ix: usize, iy: usize) {
-        //debug!("Trying to move piece at index {ix}, {iy}");
+        debug!("Trying to move piece at index {ix}, {iy}");
         match self.is_move_valid(ix, iy) {
             true => {
-                //debug!("Move is valid");
+                debug!("Move is valid");
                 let (empty_x, empty_y) = self.index_empty();
                 self.board[empty_y][empty_x] = self.board[iy][ix];
                 self.board[iy][ix] = 0;
             }
             false => {
-                //debug!("Move is invalid");
+                debug!("Move is invalid");
                 ()
             }
         }
     }
 
-    /// Scramble the puzzle by randomly clicking everywhere
-    fn scramble(&mut self) {
+    /// Randomly clicking everywhere until a valid move is found
+    fn do_one_random_move(&mut self) {
         loop {
             let ix = random_range(0, self.grid_size);
             let iy = random_range(0, self.grid_size);
@@ -89,7 +93,9 @@ impl Model {
             }
         }
     }
-    /// Update the image to show the current state of the board
+    /// Update the image to show the current state of the board,
+    /// ie, cut the pieces from the solved image and paste them into the
+    /// image shown in the board according to the current state of the board.
     fn update_image(&mut self) {
         let (size, _h) = self.image_solved.dimensions();
         let cell_size = size as usize / self.grid_size;
@@ -120,11 +126,13 @@ impl Model {
         }
         self.image = new_image;
     }
-    
+
+    /// Increment the image index and calls `change_image()`.
     fn next_image(&mut self) {
         self.image_index_current = (self.image_index_current + 1) % self.image_list.len();
         self.change_image();
     }
+    /// Decrement the image index and calls `change_image()`.
     fn previous_image(&mut self) {
         if self.image_index_current == 0 {
             self.image_index_current = self.image_list.len() - 1;
@@ -133,6 +141,7 @@ impl Model {
         }
         self.change_image();
     }
+    /// Change the image to the one at the current index.
     fn change_image(&mut self) {
         self.image_original = image::open(&self.image_list[self.image_index_current]).unwrap();
         let (img_size, _h) = self.image_solved.dimensions();
@@ -158,6 +167,9 @@ fn main() {
 fn model(app: &App) -> Model {
     let args: Vec<_> = env::args().collect();
 
+    // Check if the user passed a size argument
+    // If not, use the default size of 4.
+    // Grid is always square.
     let grid_size = match args.len() {
         2 => {
             let size = args[1].parse().unwrap();
@@ -179,14 +191,29 @@ fn model(app: &App) -> Model {
     let pad = (app.window_rect().h() * PAD_HEIGHT_FACTOR) as u32;
     let img_size = START_WINDOW_SIZE - 2 * pad;
 
-    let image_list = get_images();
-    if image_list.is_empty() {
-        panic!("No images found in the images folder");
-    }
-    debug!("Images found: {:?}", image_list);
+    // Load a list of images from the images folder.
+    // Use the first image as current.
+    // If no images are found, use a blank image.
+    let mut image_original: image::DynamicImage;
     let image_index_current = 0;
-    let image_original = image::open(&image_list[image_index_current]).unwrap();
+    let image_list = get_images();
 
+    if image_list.is_empty() {
+        println!("No images found in the images folder");
+        image_original = image::DynamicImage::new_rgba8(img_size, img_size);
+        // Fill the image with white
+        for x in 0..img_size {
+            for y in 0..img_size {
+                image_original.put_pixel(x, y, image::Rgba([255, 255, 255, 255]));
+            }
+        }
+    } else {
+        debug!("Images found: {:?}", image_list);
+        image_original = image::open(&image_list[image_index_current]).unwrap();
+    }
+
+    // Resize the original image to a square to fit the window,
+    // also make a working copy of it which will be used to display the pieces
     let image_solved =
         image_original.resize_to_fill(img_size, img_size, image::imageops::FilterType::Nearest);
     let image = image_solved.clone();
@@ -207,6 +234,7 @@ fn model(app: &App) -> Model {
     }
 }
 
+/// Resize the image when the window is resized.
 fn window_resized(_app: &App, model: &mut Model, dim: Vec2) {
     let pad = (dim.y * PAD_HEIGHT_FACTOR) as u32;
     let img_size = dim.y.min(dim.x) as u32 - 2 * pad;
@@ -217,9 +245,14 @@ fn window_resized(_app: &App, model: &mut Model, dim: Vec2) {
     );
 }
 
+/// Game loop
+/// This function is called every frame.
+/// It updates the image and the texture.
+/// It also scrambles the board if the flag is set.
 fn update(app: &App, model: &mut Model, _update: Update) {
+    // Do a number of random moves to scramble the board is the flag is set.
     if model.flag_scramble {
-        model.scramble();
+        model.do_one_random_move();
         thread::sleep(time::Duration::from_millis(15));
         model.scramble_count += 1;
         if model.scramble_count > 100 {
@@ -232,31 +265,31 @@ fn update(app: &App, model: &mut Model, _update: Update) {
     model.texture = wgpu::Texture::from_image(app, &model.image);
 }
 
+/// Process a user mouse click.
+fn mouse_clicked(mouse_x: f32, mouse_y: f32, app: &App, model: &mut Model) {
+    // and move it if it can be moved.
+    let win = app.window_rect();
+    let pad = win.h() * PAD_HEIGHT_FACTOR;
+    let cell_size = (win.h().min(win.w()) - 2.0 * pad) / model.grid_size as f32;
+    let board_size = cell_size * model.grid_size as f32;
+    if mouse_x.abs().max(mouse_y.abs()) > board_size / 2.0 {
+        debug!("Clicked outside the board");
+        return;
+    }
+    let x_offset = (win.w() - 2.0 * pad - board_size) / 2.0;
+    let y_offset = (win.h() - 2.0 * pad - board_size) / 2.0;
+
+    let ix_clicked = (model.grid_size as f32 * (mouse_x + win.w() / 2.0 - pad - x_offset)
+        / (win.w() - 2.0 * pad - 2.0 * x_offset)) as usize;
+    let iy_clicked = (model.grid_size as f32 * (mouse_y + win.h() / 2.0 - pad - 2.0 * y_offset)
+        / (win.h() - 2.0 * pad - y_offset)) as usize;
+    debug!("Indices clicked: {}, {}", ix_clicked, iy_clicked);
+    model.try_move(ix_clicked, iy_clicked);
+}
+
 fn event(app: &App, model: &mut Model, event: WindowEvent) {
     match event {
-        MousePressed(_button) => {
-            // Check if the user clicked on an arrow
-            // and move it if it can be moved.
-            let win = app.window_rect();
-            let pad = win.h() * PAD_HEIGHT_FACTOR;
-            let cell_size = (win.h().min(win.w()) - 2.0 * pad) / model.grid_size as f32;
-            let board_size = cell_size * model.grid_size as f32;
-            if app.mouse.x.abs().max(app.mouse.y.abs()) > board_size / 2.0 {
-                debug!("Clicked outside the board");
-                return;
-            }
-            let x_offset = (win.w() - 2.0 * pad - board_size) / 2.0;
-            let y_offset = (win.h() - 2.0 * pad - board_size) / 2.0;
-
-            let ix_clicked = (model.grid_size as f32
-                * (app.mouse.x + win.w() / 2.0 - pad - x_offset)
-                / (win.w() - 2.0 * pad - 2.0 * x_offset)) as usize;
-            let iy_clicked = (model.grid_size as f32
-                * (app.mouse.y + win.h() / 2.0 - pad - 2.0 * y_offset)
-                / (win.h() - 2.0 * pad - y_offset)) as usize;
-            debug!("Indices clicked: {}, {}", ix_clicked, iy_clicked);
-            model.try_move(ix_clicked, iy_clicked);
-        }
+        MousePressed(_button) => mouse_clicked(app.mouse.x, app.mouse.y, app, model),
         KeyPressed(Key::R) => model.reset(),
         KeyPressed(Key::N) => model.flag_show_numbers = !model.flag_show_numbers,
         KeyPressed(Key::Period) => model.next_image(),
@@ -326,13 +359,22 @@ fn view(app: &App, model: &Model, frame: Frame) {
     draw.to_frame(app, &frame).unwrap();
 }
 
+/// Get the list of images from the images folder.
+/// Only PNG images are accepted.
+/// If no images are found, an empty vector is returned.
 fn get_images() -> Vec<PathBuf> {
     let mut images = vec![];
-    let paths = fs::read_dir("images").unwrap();
-    for path in paths {
-        let path = path.unwrap().path();
-        if path.extension().unwrap() == "png" {
-            images.push(path);
+    match fs::read_dir("images") {
+        Ok(paths) => {
+            for path in paths {
+                let path = path.unwrap().path();
+                if path.extension().unwrap() == "png" {
+                    images.push(path);
+                }
+            }
+        }
+        Err(e) => {
+            println!("Error reading images folder: {e}");
         }
     }
     images
